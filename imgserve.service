@@ -1,0 +1,16 @@
+[Unit]
+Description=trivial virtual machine disk image server over http
+Documentation=https://github.com/fromanirh/imgserve
+After=network.target
+
+[Service]
+EnvironmentFile=-/etc/sysconfig/imgserve.env
+ExecStart=/usr/local/bin/imgserve \
+	--directory $IMGSERVE_IMAGE_DIRECTORY \
+	--port $IMGSERVE_PORT
+Restart=always
+StartLimitInterval=0
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
