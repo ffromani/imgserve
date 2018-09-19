@@ -37,17 +37,20 @@ func initRoutes(directory string) {
 func getImageInfo(w http.ResponseWriter, r *http.Request, directory string) {
 	imageName := strings.TrimPrefix(r.URL.Path, "/info/")
 	if imageName == "" {
+		w.WriteHeader(http.StatusBadRequest)
 		w.Write([]byte("name can not be empty"))
 		return
 	}
 
 	if value, ok := imagesInfo[imageName]; ok {
+		w.WriteHeader(http.StatusOK)
 		w.Write(value)
 		return
 	}
 
 	imagePath := directory + "/" + imageName
 	if _, err := os.Stat(imagePath); os.IsNotExist(err) {
+		w.WriteHeader(http.StatusNotFound)
 		w.Write([]byte("image does not exists"))
 		return
 	}
@@ -61,11 +64,12 @@ func getImageInfo(w http.ResponseWriter, r *http.Request, directory string) {
 		err    error
 	)
 	if cmdOut, err = cmd.Output(); err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
 		w.Write([]byte(fmt.Sprintf("error while reading output of qemu-img command: %v", err.Error())))
 		return
 	}
 
 	imagesInfo[imageName] = cmdOut
-
+	w.WriteHeader(http.StatusOK)
 	w.Write(cmdOut)
 }
