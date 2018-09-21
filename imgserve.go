@@ -55,8 +55,7 @@ func logInfo(next http.Handler, directory string) http.Handler {
 
 		averageSpeed, err := countAverageSpeed(directory, imageName, timeEnd.Unix()-timeStart.Unix())
 		if err != nil {
-			w.WriteHeader(http.StatusInternalServerError)
-			w.Write([]byte(fmt.Sprintf("error while calculating average speed, %v", err.Error())))
+			log.Println("error while calculating average speed: ", err.Error())
 			return
 		}
 		log.Println(clientID+", average speed: ", averageSpeed/1000, "kB/s")
