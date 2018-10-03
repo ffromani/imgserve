@@ -14,6 +14,7 @@ import (
 	flag "github.com/spf13/pflag"
 )
 
+// TODO: ensure thread safety
 var (
 	imagesInfo = make(map[string][]byte)
 )
@@ -24,63 +25,68 @@ func main() {
 	flag.Parse()
 
 	initRoutes(*directory)
+
+	// TODO: add option to pre-load infos about all the images found in the directory
+
 	addr := fmt.Sprintf(":%d", *port)
 	log.Fatal(http.ListenAndServe(addr, nil))
 }
 
 //initRoutes initializes all routes
 func initRoutes(directory string) {
-	http.Handle("/", logInfo(http.FileServer(http.Dir(directory)), directory))
+	http.Handle("/", downloadSpeedHandler(http.FileServer(http.Dir(directory)), directory))
 	http.HandleFunc("/info/", func(w http.ResponseWriter, r *http.Request) {
-		getImageInfo(w, r, directory)
+		infoHandler(w, r, directory)
 	})
 }
 
-func logInfo(next http.Handler, directory string) http.Handler {
+func downloadSpeedHandler(next http.Handler, directory string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		timeStart := time.Now()
 		clientID := "clientID: " + r.RemoteAddr
-		log.Printf("%s start: %s", clientID, timeStart.Format(time.RFC3339))
+		log.Printf("%s download BEGIN", clientID)
 
 		next.ServeHTTP(w, r)
 
-		timeEnd := time.Now()
-		log.Println("%s end: %s", clientID, timeEnd.Format(time.RFC3339))
+		duration := time.Now().Sub(timeStart)
+		log.Printf("%s download FINISH in %v", clientID, time.Duration(duration))
 
-		imageName := strings.TrimPrefix(r.URL.Path, "/")
-		if imageName == "" {
-			w.WriteHeader(http.StatusBadRequest)
-			w.Write([]byte("name can not be empty"))
-			return
-		}
-
-		duration := timeEnd.Unix() - timeStart.Unix()
-		if duration <= 0 {
-			// FIXME: explain how duration could possibly be < 0
-			return
-		}
-
-		averageSpeed, err := countAverageSpeed(directory, imageName, duration)
-		if err != nil {
-			log.Printf("error while calculating average speed: %s", err.Error())
-			return
-		}
-		log.Printf("%s average speed: %i kB/s", clientID, averageSpeed/1000)
+		logDownloadSpeed(clientID, r.URL.Path, directory, int64(duration.Seconds()))
 	})
+}
+
+func logDownloadSpeed(clientID string, urlPath string, directory string, duration int64) {
+	if duration <= 0 {
+		log.Printf("%s: unexpected duration %d (no average speed reported)", clientID, duration)
+		return
+	}
+
+	imageName := strings.TrimPrefix(urlPath, "/")
+	if imageName == "" {
+		log.Printf("%s: unrecognized image name from '%s' (no average speed reported)", clientID, urlPath)
+		return
+	}
+
+	averageSpeed, err := countAverageSpeed(directory, imageName, duration)
+	if err != nil {
+		log.Printf("%s: %s (no average speed reported)", clientID, err.Error())
+		return
+	}
+
+	log.Printf("%s average speed: %d kB/s", clientID, averageSpeed/1000)
+
 }
 
 //countAverageSpeed counts average speed of downloading image.
 //it counts sizeOfImage(bytes)/durationOfDownload(seconds)
 func countAverageSpeed(directory, imageName string, duration int64) (int64, error) {
-	if _, ok := imagesInfo[imageName]; !ok {
-		err := getInfo(directory, imageName)
-		if err != nil {
-			return 0, err
-		}
+	imageSpec, ok := imagesInfo[imageName]
+	if !ok {
+		return 0, errors.New(fmt.Sprintf("No info about image '%s'", imageName))
 	}
 
 	data := make(map[string]interface{})
-	err := json.Unmarshal(imagesInfo[imageName], &data)
+	err := json.Unmarshal(imageSpec, &data)
 	if err != nil {
 		return 0, err
 	}
@@ -90,8 +96,8 @@ func countAverageSpeed(directory, imageName string, duration int64) (int64, erro
 	return averageSpeed, nil
 }
 
-//getImageInfo returns info about image
-func getImageInfo(w http.ResponseWriter, r *http.Request, directory string) {
+//infoHandler returns info about image
+func infoHandler(w http.ResponseWriter, r *http.Request, directory string) {
 	imageName := strings.TrimPrefix(r.URL.Path, "/info/")
 	if imageName == "" {
 		w.WriteHeader(http.StatusBadRequest)
@@ -106,7 +112,7 @@ func getImageInfo(w http.ResponseWriter, r *http.Request, directory string) {
 		return
 	}
 
-	err := getInfo(directory, imageName)
+	err := getQEMUImageInfo(directory, imageName)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		w.Write([]byte(err.Error()))
@@ -117,7 +123,7 @@ func getImageInfo(w http.ResponseWriter, r *http.Request, directory string) {
 	w.Write(imagesInfo[imageName])
 }
 
-func getInfo(directory, imageName string) error {
+func getQEMUImageInfo(directory, imageName string) error {
 	imagePath := directory + "/" + imageName
 	log.Printf("getting QEMU info from '%s'", imagePath)
 
@@ -129,10 +135,9 @@ func getInfo(directory, imageName string) error {
 	cmdArgs := []string{"info", imagePath, "--output=json"}
 	cmd := exec.Command(cmdName, cmdArgs...)
 
-	if cmdOut, err := cmd.Output(); err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte(fmt.Sprintf("error while reading output of qemu-img command: %v", err.Error())))
-		return
+	cmdOut, err := cmd.Output()
+	if err != nil {
+		return errors.New(fmt.Sprintf("error while reading output of qemu-img command: %v", err.Error()))
 	}
 
 	imagesInfo[imageName] = cmdOut
