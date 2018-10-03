@@ -20,7 +20,7 @@ var (
 
 func main() {
 	port := flag.IntP("port", "p", 8001, "port to serve on")
-	directory := flag.StringP("directory", "D", ".", "the directory of static file to host")
+	directory := flag.StringP("directory", "D", ".", "the directory of image files")
 	flag.Parse()
 
 	initRoutes(*directory)
@@ -40,11 +40,12 @@ func logInfo(next http.Handler, directory string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		timeStart := time.Now()
 		clientID := "clientID: " + r.RemoteAddr
-		log.Println(clientID + ", start: " + timeStart.Format(time.RFC3339))
+		log.Printf("%s start: %s", clientID, timeStart.Format(time.RFC3339))
+
 		next.ServeHTTP(w, r)
 
 		timeEnd := time.Now()
-		log.Println(clientID + ", end: " + timeEnd.Format(time.RFC3339))
+		log.Println("%s end: %s", clientID, timeEnd.Format(time.RFC3339))
 
 		imageName := strings.TrimPrefix(r.URL.Path, "/")
 		if imageName == "" {
@@ -53,12 +54,18 @@ func logInfo(next http.Handler, directory string) http.Handler {
 			return
 		}
 
-		averageSpeed, err := countAverageSpeed(directory, imageName, timeEnd.Unix()-timeStart.Unix())
-		if err != nil {
-			log.Println("error while calculating average speed: ", err.Error())
+		duration := timeEnd.Unix() - timeStart.Unix()
+		if duration <= 0 {
+			// FIXME: explain how duration could possibly be < 0
 			return
 		}
-		log.Println(clientID+", average speed: ", averageSpeed/1000, "kB/s")
+
+		averageSpeed, err := countAverageSpeed(directory, imageName, duration)
+		if err != nil {
+			log.Printf("error while calculating average speed: %s", err.Error())
+			return
+		}
+		log.Printf("%s average speed: %i kB/s", clientID, averageSpeed/1000)
 	})
 }
 
@@ -91,6 +98,7 @@ func getImageInfo(w http.ResponseWriter, r *http.Request, directory string) {
 		w.Write([]byte("name can not be empty"))
 		return
 	}
+	log.Printf("info about '%s'", imageName)
 
 	if value, ok := imagesInfo[imageName]; ok {
 		w.WriteHeader(http.StatusOK)
@@ -111,6 +119,8 @@ func getImageInfo(w http.ResponseWriter, r *http.Request, directory string) {
 
 func getInfo(directory, imageName string) error {
 	imagePath := directory + "/" + imageName
+	log.Printf("getting QEMU info from '%s'", imagePath)
+
 	if _, err := os.Stat(imagePath); os.IsNotExist(err) {
 		return errors.New("image not found")
 	}
@@ -119,12 +129,10 @@ func getInfo(directory, imageName string) error {
 	cmdArgs := []string{"info", imagePath, "--output=json"}
 	cmd := exec.Command(cmdName, cmdArgs...)
 
-	var (
-		cmdOut []byte
-		err    error
-	)
-	if cmdOut, err = cmd.Output(); err != nil {
-		return fmt.Errorf("error while reading output of qemu-img command: %v", err.Error())
+	if cmdOut, err := cmd.Output(); err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte(fmt.Sprintf("error while reading output of qemu-img command: %v", err.Error())))
+		return
 	}
 
 	imagesInfo[imageName] = cmdOut
